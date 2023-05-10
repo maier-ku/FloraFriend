@@ -30,6 +30,7 @@ ik = ik_transform.ArmIK()
 set_visual = 'plant'
 detect_step = 'rotate' #rotate, changeplace，move，water 阶段
 detect_plant = False
+plant_type = 0
 threshold = 20 # 当目标和相机朝向在同一方向上的最大像素差
 offset = 500 # 目标和相机方向偏移量
 distance_to_obstacle = 0.0 # 到障碍物的距离
@@ -127,6 +128,7 @@ def reset():
     global x_dis, y_dis
     global detect_plant, detect_step
     global position_en, offset
+    global plant_type
     
     with lock:
         x_dis = 500
@@ -140,6 +142,7 @@ def reset():
         detect_step = 'rotate'
         detect_plant = False
         offset = 500
+        plant_type = 0
 
 # app初始化调用
 def init():
@@ -153,15 +156,19 @@ def run(msg):
     global detect_plant, detect_step
     global offset, distance_to_obstacle
     global centreX, centreY
+    global plant_type
 
-    center_x = msg.center_x
-    center_y = msg.center_y
-    offset = abs(center_x - img_w/2)
+    if set_visual == 'plant':
+        center_x = msg.center_x
+        center_y = msg.center_y
+        offset = abs(center_x - img_w/2)
 
-    if center_x or center_y:
-        detect_plant = True
+        if center_x or center_y:
+            detect_plant = True
+        else:
+            detect_plant = False
     else:
-        detect_plant = False
+        plant_type = msg.center_x
 
 
 # 机器人移动函数
@@ -171,6 +178,10 @@ def move():
 
 
     while __isRunning:
+
+        set_visual = 'plant'
+        visual_running('plant', '')
+
         if detect_step == 'rotate':  # 旋转阶段
             start_time = time.time()
             while True:
@@ -212,6 +223,10 @@ def move():
                 detect_step = 'water'
 
         if detect_step == "water":
+            water_time = 8  # 正常浇水时间8s
+            set_visual = 'plant_type'
+            visual_running('plant_type')
+
             # 插入土壤湿度传感器
             target = ik.setPitchRanges((0, round(y_dis + offset_y, 4), -0.08), -180, -180, 0) #机械臂向下伸
             if target:
@@ -220,9 +235,26 @@ def move():
                                                                 (5, servo_data['servo5']), (6, x_dis)))
             rospy.sleep(1.5)
 
-            # bus_servo_control.set_servos(joints_pub, 1500,
-            #                              ((1, 450), (2, 500), (3, 80), (4, 825), (5, 625), (6, 500)))  # 机械臂抬起来
-            # rospy.sleep(1.5)
+            if moisture > th_mois: # 如果湿度大于阈值，不浇水
+                water_time = 0
+
+            bus_servo_control.set_servos(joints_pub, 1500,
+                                         ((1, 450), (2, 500), (3, 80), (4, 825), (5, 625), (6, 500)))  # 机械臂抬起来
+            rospy.sleep(1.5)
+
+            if light >= th_light or temperature >= th_temp: # 如果温湿度大于阈值，浇水量为1.2倍
+                water_time = water_time * 1.2
+
+            if moisture > th_mois:
+                water_time = 0
+
+            water_time = (10 - plant_type) * 0.1 * water_time # 根据不同种类调整浇水量
+            pump_pub.publish(water_time) # 浇水
+
+            set_velocity.publish(0, 90, 1)
+            rospy.sleep(36)
+            detect_step == 'changeplace'
+
 
 
 # enter服务回调函数
@@ -279,8 +311,6 @@ def start_running():
     rospy.loginfo("start running intelligent watering")
     with lock:
         __isRunning = True
-        visual_running = rospy.ServiceProxy('/visual_processing/set_running', SetParam)
-        visual_running('plant','')
         rospy.sleep(0.1)
         # 运行子线程
         th = Thread(target=move)
@@ -345,6 +375,8 @@ if __name__ == '__main__':
     exit_srv = rospy.Service('/intelligent_watering/exit', Trigger, exit_func)
     running_srv = rospy.Service('/intelligent_watering/set_running', SetBool, set_running)
     heartbeat_srv = rospy.Service('/intelligent_watering/heartbeat', SetBool, heartbeat_srv_cb)
+    # 水泵
+    pump_pub = rospy.Publisher('/sensor/pump', Float32, queue_size=1)
   
     rospy.sleep(0.5) # pub之后必须延时才能生效
     

@@ -46,7 +46,8 @@ configFile = "/home/ubuntu/armpi_pro/src/face_detect/scripts/models/deploy.proto
 modelFile = "/home/ubuntu/armpi_pro/src/face_detect/scripts/models/res10_300x300_ssd_iter_140000_fp16.caffemodel"
 net = cv2.dnn.readNetFromCaffe(configFile, modelFile)
 
-yolo_modelpath = "best.pt"
+yolo_modelpath_plantdetect = "best.pt"
+yolo_modelpath_plantrecog = "best.pt"
 
 
 # 找出面积最大的轮廓
@@ -73,7 +74,7 @@ def plant_detect(img):
     img_copy = img.copy()
     img_h, img_w = img.shape[:2]
 
-    yolo = torch.hub.load('yolov5', 'custom', path=yolo_modelpath, source='local')
+    yolo = torch.hub.load('yolov5', 'custom', path=yolo_modelpath_plantdetect, source='local')
     yolo.conf = conf_threshold  # confidence threshold
 
     result = yolo(img_copy)
@@ -93,6 +94,48 @@ def plant_detect(img):
 
         msg.center_x = int(centre_x)
         msg.center_y = int(centre_y)
+        msg.data = round(confidence, 2)
+        publish_en = True
+
+    if publish_en:
+        if (time.time() - pub_time) >= 0.06:
+            result_pub.publish(msg)  # 发布结果
+            pub_time = time.time()
+
+        if msg.data == 0:
+            publish_en = False
+            result_pub.publish(msg)
+
+    return img
+
+# 植物种类识别函数
+def plant_recog(img):
+    global pub_time
+    global publish_en
+
+    msg = Result()
+    img_copy = img.copy()
+    img_h, img_w = img.shape[:2]
+
+    yolo = torch.hub.load('yolov5', 'custom', path=yolo_modelpath_plantrecog, source='local')
+    yolo.conf = conf_threshold  # confidence threshold
+
+    result = yolo(img_copy)
+    result = result.xyxy[0].tolist()
+
+    if result:
+        result = result[0]
+        x1 = result[0]
+        y1 = result[1]
+        x2 = result[2]
+        y2 = result[3]
+        centre_x = x1 + (x2 - x1)
+        centre_y = y1 + (y2 - y1)
+        confidence = result[4]
+        class_type = result[5]
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        msg.center_x = class_type # 借用centerx来传递种类
         msg.data = round(confidence, 2)
         publish_en = True
 
@@ -400,6 +443,8 @@ def image_callback(ros_image):
                 frame_result = face_detect(cv2_img)
             elif target_type == 'plant':
                 frame_result = plant_detect(cv2_img)
+            elif target_type == 'plant_type':
+                frame_result = plant_recog(cv2_img)
             elif target_type == 'apriltag': 
                 frame_result = apriltag_Detect(cv2_img)
             elif target_type == 'line':
